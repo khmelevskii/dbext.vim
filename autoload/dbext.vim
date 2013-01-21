@@ -3147,11 +3147,21 @@ endfunction
 function! s:DB_PGSQL_describeProcedure(procedure_name)
     let owner      = s:DB_getObjectOwner(a:procedure_name)
     let proc_name  = s:DB_getObjectName(a:procedure_name)
-    let query =   "SELECT p.* ".
-                \ "  FROM pg_proc p, pg_type t, pg_language l " .
-                \ " WHERE p.proargtypes = t.oid " .
-                \ "   AND p.prolang = t.oid " .
-                \ "   AND p.proname = '" . proc_name . "'"
+    let query =   "SElECT concat('CREATE FUNCTION ', p.proname, ".
+                \ " '(', " .
+                \ " pg_get_function_identity_arguments(p.oid), " .
+                \ "')',E'\n '," .
+                \ "'  RETURNS '," .
+                \ "t1.typname, ' AS ',E'\n'," .
+                \ "'$BODY$'," .
+                \ "prosrc," .
+                \ "'$BODY$',E'\n'," .
+                \ "'  LANGUAGE '," .
+                \ "l.lanname, ';') " .
+                \ "FROM pg_proc p " .
+                \ "LEFT JOIN pg_type t1 ON p.prorettype=t1.oid " .
+                \ "LEFT JOIN pg_language l ON p.prolang=l.oid " .
+                \ " WHERE p.proname = '" . proc_name . "'"
     " let query =   "SELECT t.typname, t.typdefault, t.typinput " .
     "             \ "     , t.typoutput, l.lanname " .
     "             \ "  FROM pg_proc p, pg_type t, pg_language l " .
@@ -3206,20 +3216,22 @@ endfunction
 
 function! s:DB_PGSQL_getListColumn(table_name) 
     let owner      = s:DB_getObjectOwner(a:table_name)
-    let table_name = s:DB_getObjectName(a:table_name)
-    let query =   "SELECT a.attname                  " .
-                \ "  FROM pg_class c, pg_attribute a " .
-                \ " WHERE c.relfilenode = a.attrelid " .
-                \ "   AND a.attnum > 0               " .
-                \ "   AND c.relname = '" . table_name . "'"
- 
-    if strlen(owner) > 0
-        let query = query .
-                    \ "   AND pg_get_userbyid(c.relowner) = '".owner."' "
-    endif
+    let table_name = tolower(s:DB_getObjectName(a:table_name))
+    
+    let query =   "SELECT column_name                   " .
+          \ "      FROM information_schema.columns" .
+          \ " WHERE table_name = '" . table_name . "'"
+
+    " if strlen(owner) > 0
+    "     let query = query .
+    "                 \ "   AND pg_get_userbyid(c.relowner) = '".owner."' "
+    " endif
+
     let query = query .
-                \ " ORDER BY a.attnum;            "
+          \ " ORDER BY ordinal_position"
+
     let result = s:DB_PGSQL_execSql( query )
+    
     return s:DB_PGSQL_stripHeaderFooter(result)
 endfunction 
 
@@ -3236,29 +3248,37 @@ function! s:DB_PGSQL_stripHeaderFooter(result)
 endfunction 
 
 function! s:DB_PGSQL_getDictionaryTable() 
+    let owner      = s:DB_getObjectOwner('')
+
     let result = s:DB_PGSQL_execSql(
                 \ "select ".(s:DB_get('dict_show_owner')==1?"tableowner||'.'||":'')."tablename " .
                 \ " from pg_tables " .
-                \ "where tableowner != 'pg_catalog' " .
+                \ "where tableowner = '" . owner . "' " .
                 \ "order by ".(s:DB_get('dict_show_owner')==1?"tableowner, ":'')."tablename"
                 \ )
     return s:DB_PGSQL_stripHeaderFooter(result)
 endfunction 
 
 function! s:DB_PGSQL_getDictionaryProcedure() 
+    let owner      = s:DB_getObjectOwner('')
+
     let result = s:DB_PGSQL_execSql(
                 \ "SELECT p.proname " .
-                \ "  FROM pg_proc p " .
+                \ "  FROM pg_proc p, pg_user u " .
+                \ " WHERE p.proowner = u.usesysid " .
+                \ "   AND u.usename  like '" . owner . "%' " .
                 \ " ORDER BY p.proname "
                 \ )
     return s:DB_PGSQL_stripHeaderFooter(result)
 endfunction 
 
 function! s:DB_PGSQL_getDictionaryView() 
+    let owner      = s:DB_getObjectOwner('')
+
     let result = s:DB_PGSQL_execSql(
                 \ "select ".(s:DB_get('dict_show_owner')==1?"viewowner||'.'||":'')."viewname " .
                 \ "  from pg_views " .
-                \ " where viewowner != 'pg_catalog' " .
+                \ " where viewowner = '" . owner . "' " .
                 \ " order by ".(s:DB_get('dict_show_owner')==1?"viewowner, ":'')."viewname"
                 \ )
     return s:DB_PGSQL_stripHeaderFooter(result)
@@ -5872,6 +5892,7 @@ function! s:DB_getObjectOwner(object) "{{{
     " \.          - must by followed by a .
     " let owner = matchstr( a:object, '^\s*\zs.*\ze\.' )
     let owner = matchstr( a:object, '^\("\|\[\)\?\zs.\{-}\ze\("\|\]\)\?\.' )
+    let owner = s:DB_get("user")
     return owner
 endfunction "}}}
 function! s:DB_getObjectName(object) "{{{ 
